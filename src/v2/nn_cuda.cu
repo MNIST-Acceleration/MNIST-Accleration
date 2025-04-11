@@ -24,7 +24,6 @@ double **allocateMatrix(int rows, int cols) {
     }
     return mat;
 }
-
 void allocateMatrixDevice(double **mat, int rows, int cols) {
     if (cudaMalloc((void **)mat, rows * cols * sizeof(double)) != cudaSuccess) {
         fprintf(stderr, "Error allocating device memory for matrix\n");
@@ -32,22 +31,6 @@ void allocateMatrixDevice(double **mat, int rows, int cols) {
     }
 }
 
-void copyMatrixtoDevice(double **mat, double *mat_dev, int rows, int cols) {
-    for (int i = 0; i < rows; i++) {
-        if (cudaMemcpy(mat_dev + (i * cols), mat[i], sizeof(double) * cols, cudaMemcpyHostToDevice) != cudaSuccess) {
-            fprintf(stderr, "Error copying matrix to device\n");
-            exit(EXIT_FAILURE);
-        }
-    }
-}
-
-void copyMatrixtoHost(double **mat, double *mat_dev, int rows, int cols) {
-    for (int i = 0; i < rows; i++) {
-        if (cudaMemcpy(mat[i], mat_dev + (i * cols), sizeof(double) * cols, cudaMemcpyDeviceToHost) != cudaSuccess) {
-            printf("%d Error in copying copyMatrixtoHost\n", i);
-        }
-    }
-}
 // Free allocated matrix memory
 void freeMatrix(double **mat, int rows) {
     for (int i = 0; i < rows; i++) {
@@ -89,6 +72,23 @@ typedef struct {
     double *b2;
 } NeuralNetworkDevice;
 
+void copyMatrixtoDevice(double **mat, double *mat_dev, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        if (cudaMemcpy(mat_dev + (i * cols), mat[i], sizeof(double) * cols, cudaMemcpyHostToDevice) != cudaSuccess) {
+            fprintf(stderr, "Error copying matrix to device\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
+void copyMatrixtoHost(double **mat, double *mat_dev, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        if (cudaMemcpy(mat[i], mat_dev + (i * cols), sizeof(double) * cols, cudaMemcpyDeviceToHost) != cudaSuccess) {
+            printf("%d Error in copying copyMatrixtoHost\n", i);
+        }
+    }
+}
+
 // Initialize neural network
 NeuralNetwork *createNetwork() {
     NeuralNetwork *net = (NeuralNetwork *)malloc(sizeof(NeuralNetwork));
@@ -109,6 +109,7 @@ NeuralNetwork *createNetwork() {
     return net;
 }
 
+// Initialize neural network
 NeuralNetworkDevice *createNetworkDevice(NeuralNetwork *networkHost) {
     NeuralNetworkDevice *net;
     NeuralNetworkDevice netHost;
@@ -154,7 +155,6 @@ NeuralNetworkDevice *createNetworkDevice(NeuralNetwork *networkHost) {
     return net;
 }
 
-// Forward pass
 void forward(NeuralNetwork *net, double *input, double *hidden, double *output) {
     for (int i = 0; i < HIDDEN_SIZE; i++) {
         hidden[i] = net->b1[i];
@@ -207,41 +207,88 @@ __global__ void applySoftMaxDevice(double *output_device) {
     }
 }
 
-// Backpropagation
-void backward(NeuralNetwork *net, double *input, double *hidden, double *output, double *target) {
-    double d_output[OUTPUT_SIZE], d_hidden[HIDDEN_SIZE];
-
-    // Compute output layer gradient
-    for (int i = 0; i < OUTPUT_SIZE; i++)
-        d_output[i] = output[i] - target[i];
-
-    // Compute hidden layer gradient
-    for (int i = 0; i < HIDDEN_SIZE; i++) {
-        d_hidden[i] = 0;
-        for (int j = 0; j < OUTPUT_SIZE; j++)
-            d_hidden[i] += net->W2[j][i] * d_output[j];
-        d_hidden[i] *= (hidden[i] > 0);
-    }
-
-    // Update weights (gradient descent)
-    for (int i = 0; i < OUTPUT_SIZE; i++)
-        for (int j = 0; j < HIDDEN_SIZE; j++)
-            net->W2[i][j] -= LEARNING_RATE * d_output[i] * hidden[j];
-
-    for (int i = 0; i < HIDDEN_SIZE; i++)
-        for (int j = 0; j < INPUT_SIZE; j++)
-            net->W1[i][j] -= LEARNING_RATE * d_hidden[i] * input[j];
-
-    for (int i = 0; i < OUTPUT_SIZE; i++)
-        net->b2[i] -= LEARNING_RATE * d_output[i];
-
-    for (int i = 0; i < HIDDEN_SIZE; i++)
-        net->b1[i] -= LEARNING_RATE * d_hidden[i];
+__global__ void computerOutputGradient(double *output, double *target, double *d_output_device) {
+    d_output_device[threadIdx.x] = output[threadIdx.x] - target[threadIdx.x];
 }
 
+__global__ void computerHiddenGradient(NeuralNetworkDevice *net, double *d_output_device, double *d_hidden_device, double *hidden) {
+
+    int i = threadIdx.x;
+    d_hidden_device[i] = 0;
+    for (int j = 0; j < OUTPUT_SIZE; j++)
+        d_hidden_device[i] += net->W2[j * HIDDEN_SIZE + i] * d_output_device[j];
+    d_hidden_device[i] *= (hidden[i] > 0);
+}
+
+__global__ void updateOutputLayer(NeuralNetworkDevice *net, double *d_output_device, double *hidden) {
+
+    int i = blockIdx.x;
+    int j = threadIdx.x;
+    net->W2[i * HIDDEN_SIZE + j] -= LEARNING_RATE * d_output_device[i] * hidden[j];
+
+    if (threadIdx.x == 0)
+        net->b2[i] -= LEARNING_RATE * d_output_device[i];
+}
+__global__ void updateHiddenLayer(NeuralNetworkDevice *net, double *d_hidden_device, double *input) {
+
+    int i = blockIdx.x;
+    int j = threadIdx.x;
+    net->W1[i * INPUT_SIZE + j] -= LEARNING_RATE * d_hidden_device[i] * input[j];
+
+    if (threadIdx.x == 0)
+        net->b1[i] -= LEARNING_RATE * d_hidden_device[i];
+}
+
+void backwardDevice(NeuralNetworkDevice *net, double *input, double *hidden, double *output, double *target, double *d_hidden_device, double *d_output_device) {
+
+    computerOutputGradient<<<1, OUTPUT_SIZE>>>(output, target, d_output_device);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Kernel launch error: %s\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+    cudaDeviceSynchronize();
+
+    computerHiddenGradient<<<1, HIDDEN_SIZE>>>(net, d_output_device, d_hidden_device, hidden);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Kernel launch error: %s\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+    cudaDeviceSynchronize();
+
+    updateOutputLayer<<<OUTPUT_SIZE, HIDDEN_SIZE>>>(net, d_output_device, hidden);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Kernel launch error: %s\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+    updateHiddenLayer<<<HIDDEN_SIZE, INPUT_SIZE>>>(net, d_hidden_device, input);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Kernel launch error: %s\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+    cudaDeviceSynchronize();
+}
+
+__global__ void findCorrect(double *loss_device, int *correct_device, double *output, double *labels_dev) {
+    for (int k = 0; k < OUTPUT_SIZE; k++) {
+        *loss_device -= labels_dev[k] * log(output[k]);
+    }
+    int pred = 0, actual = 0;
+
+    for (int j = 0; j < OUTPUT_SIZE; j++) {
+        if (output[j] > output[pred])
+            pred = j;
+        if (labels_dev[j] > labels_dev[actual])
+            actual = j;
+    }
+    if (pred == actual)
+        (*correct_device)++;
+}
 // Train network
 void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, double **images, double **labels, int numImages) {
-
     double *images_dev;
 
     double *hidden_device;
@@ -286,12 +333,21 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, double **images,
         fprintf(stderr, "Error allocating device memory for correct\n");
         exit(EXIT_FAILURE);
     }
-
     clock_t total_start = clock();
-    for (int epoch = 0; epoch < EPOCHS; epoch++) {
+    int epoch = 0;
+    for (; epoch < EPOCHS; epoch++) {
         clock_t epoch_start = clock();
         double loss = 0.0;
         int correct = 0;
+
+        if (cudaMemset(loss_device, 0, sizeof(double)) != cudaSuccess) {
+            fprintf(stderr, "Error initializing loss_device\n");
+            exit(EXIT_FAILURE);
+        }
+        if (cudaMemset(correct_device, 0, sizeof(int)) != cudaSuccess) {
+            fprintf(stderr, "Error initializing correct_device\n");
+            exit(EXIT_FAILURE);
+        }
 
         for (int i = 0; i < numImages; i++) {
 
@@ -316,28 +372,33 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, double **images,
             applySoftMaxDevice<<<1, 1>>>(output_device);
             cudaDeviceSynchronize();
 
+            backwardDevice(net_device, images_dev + (i * INPUT_SIZE), hidden_device, output_device, labels_dev + (i * OUTPUT_SIZE), d_hidden_device, d_output_device);
             cudaDeviceSynchronize();
+            findCorrect<<<1, 1>>>(loss_device, correct_device, output_device, labels_dev + (i * OUTPUT_SIZE));
             cudaDeviceSynchronize();
-            double hidden[HIDDEN_SIZE], output[OUTPUT_SIZE];
-            backward(net, images[i], hidden, output, labels[i]);
-
-            // Compute loss & accuracy
-            for (int k = 0; k < OUTPUT_SIZE; k++)
-                loss -= labels[i][k] * log(output[k]);
-            int pred = 0, actual = 0;
-            for (int j = 0; j < OUTPUT_SIZE; j++) {
-                if (output[j] > output[pred])
-                    pred = j;
-                if (labels[i][j] > labels[i][actual])
-                    actual = j;
-            }
-            if (pred == actual)
-                correct++;
+            // break;
         }
 
+        if (cudaMemcpy(&loss, loss_device, sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) {
+            printf("Error in copying loss from device to host");
+        }
+
+        if (cudaMemcpy(&correct, correct_device, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
+            printf("Error in copying correct from device to host");
+        }
         printf("Epoch %d - Loss: %.4f - Train Accuracy: %.2f%% - Time: %.3fs\n",
                epoch + 1, loss / numImages, (correct / (double)numImages) * 100, get_time(epoch_start));
     }
+
+    NeuralNetworkDevice net_dev;
+    cudaMemcpy(&net_dev, net_device, sizeof(NeuralNetworkDevice), cudaMemcpyDeviceToHost);
+
+    copyMatrixtoHost(net->W1, net_dev.W1, HIDDEN_SIZE, INPUT_SIZE);
+    copyMatrixtoHost(net->W2, net_dev.W2, OUTPUT_SIZE, HIDDEN_SIZE);
+
+    cudaMemcpy(net->b1, net_dev.b1, HIDDEN_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(net->b2, net_dev.b2, OUTPUT_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+
     printf("Total training time: %.3fs\n", get_time(total_start));
 }
 
@@ -433,6 +494,7 @@ int main() {
     NeuralNetwork *net = createNetwork();
     NeuralNetworkDevice *net_device = createNetworkDevice(net);
     train(net, net_device, train_images, train_labels, 60000);
+
     evaluate(net, test_images, test_labels, 10000);
 
     freeNetwork(net);
