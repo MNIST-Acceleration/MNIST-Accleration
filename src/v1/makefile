@@ -1,5 +1,7 @@
 CC = gcc
-CFLAGS = -Wall -O2
+CFLAGS = -Wall -pg -O2
+PROF_OUT = gmon.out
+ANALYSIS = analysis.txt
 
 EXE = nn.exe
 SRC = nn.c
@@ -12,5 +14,9 @@ $(EXE): $(SRC)
 run: $(EXE)
 	./$(EXE)
 
+gprof: $(EXE)
+	gprof $(EXE) $(PROF_OUT) > $(ANALYSIS)
+	@echo "Profiling results saved to $(ANALYSIS)"
+
 clean:
-	rm -f $(EXE)
+	rm -f $(EXE) $(PROF_OUT) $(ANALYSIS)
