@@ -26,6 +26,6 @@ src/
 ├── V2/          # Naive GPU (CUDA)
 ├── V3/          # Optimized GPU
 └── V4/          # Tensor Core GPU
-data/            # MNIST dataset (not included in deliverables)
+data/            # MNIST dataset
 report/          # Reports for each deliverable
 README.md        # This file
