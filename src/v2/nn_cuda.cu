@@ -235,7 +235,7 @@ void backward(NeuralNetwork* net, double* input, double* hidden, double* output,
 
 
 // Train network
-void train(NeuralNetwork* net, double** images, double** labels, int numImages) {
+void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, double **images, double **labels, int numImages) {
 
     double *images_dev;
 
@@ -302,6 +302,10 @@ void train(NeuralNetwork* net, double** images, double** labels, int numImages) 
 
         for (int i = 0; i < numImages; i++) {
 
+            
+
+            double hidden[HIDDEN_SIZE], output[OUTPUT_SIZE];
+            // forward(net, images[i], hidden, output);
             forwardKernalHidden<<<1, HIDDEN_SIZE>>>(net_device, images_dev + (i * INPUT_SIZE), hidden_device);
             cudaError_t err = cudaGetLastError();
             if (err != cudaSuccess) {
@@ -323,9 +327,7 @@ void train(NeuralNetwork* net, double** images, double** labels, int numImages) 
             applySoftMaxDevice<<<1, 1>>>(output_device);
             cudaDeviceSynchronize();
 
-
-            double hidden[HIDDEN_SIZE], output[OUTPUT_SIZE];
-            // forward(net, images[i], hidden, output);
+         
             backward(net, images[i], hidden, output, labels[i]);
 
             // Compute loss & accuracy
@@ -433,9 +435,9 @@ int main() {
     double** test_images = loadMNISTImages("data/t10k-images.idx3-ubyte", 10000);
     double** test_labels = loadMNISTLabels("data/t10k-labels.idx1-ubyte", 10000);
 
-    NeuralNetwork* net = createNetwork();
-    train(net, train_images, train_labels, 60000);
-    evaluate(net, test_images, test_labels, 10000);
+    NeuralNetwork *net = createNetwork();
+    NeuralNetworkDevice *net_device = createNetworkDevice(net);
+    train(net, net_device, train_images, train_labels, 60000);    evaluate(net, test_images, test_labels, 10000);
 
     freeNetwork(net);
     return 0;
