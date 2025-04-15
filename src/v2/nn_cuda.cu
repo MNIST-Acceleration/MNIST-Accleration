@@ -165,6 +165,41 @@ void forward(NeuralNetwork* net, double* input, double* hidden, double* output) 
     softmax(output, OUTPUT_SIZE);
 }
 
+__global__ void forwardKernalHidden(NeuralNetworkDevice *net_dev, double *image, double *hidden) {
+    int neuron_no = threadIdx.x;
+    int g_index = INPUT_SIZE * neuron_no; // suspicious line
+
+    hidden[neuron_no] = net_dev->b1[neuron_no];
+    for (int j = 0; j < INPUT_SIZE; j++)
+        hidden[neuron_no] += net_dev->W1[g_index + j] * image[j];
+
+    hidden[neuron_no] = (hidden[neuron_no] > 0) ? hidden[neuron_no] : 0;
+}
+__global__ void forwardKernalOutput(NeuralNetworkDevice *net_dev, double *hidden, double *output_device) {
+    int neuron_no = threadIdx.x;
+    int g_index = HIDDEN_SIZE * neuron_no; // suspicious line
+
+    double ans = net_dev->b2[neuron_no];
+    for (int j = 0; j < HIDDEN_SIZE; j++) {
+        ans += net_dev->W2[g_index + j] * hidden[j];
+    }
+    // printf("ans = %lf \n", ans);
+    // softmax(output, OUTPUT_SIZE);
+
+    output_device[neuron_no] = (ans > 0) ? ans : 0;
+}
+
+__global__ void applySoftMaxDevice(double *output_device) {
+
+    double sum = 0;
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        output_device[i] = exp(output_device[i]);
+        sum += output_device[i];
+    }
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        output_device[i] /= sum;
+    }
+}
 // Backpropagation
 void backward(NeuralNetwork* net, double* input, double* hidden, double* output, double* target) {
     double d_output[OUTPUT_SIZE], d_hidden[HIDDEN_SIZE];
@@ -201,15 +236,96 @@ void backward(NeuralNetwork* net, double* input, double* hidden, double* output,
 
 // Train network
 void train(NeuralNetwork* net, double** images, double** labels, int numImages) {
+
+    double *images_dev;
+
+    double *hidden_device;
+    double *output_device;
+    double *labels_dev;
+
+    double *d_hidden_device;
+    double *d_output_device;
+
+    allocateMatrixDevice(&images_dev, numImages, INPUT_SIZE);
+    allocateMatrixDevice(&labels_dev, numImages, OUTPUT_SIZE);
+
+    if (cudaMalloc((void **)&hidden_device, sizeof(double) * HIDDEN_SIZE) != cudaSuccess) {
+        fprintf(stderr, "Error allocating device memory for hidden layer\n");
+        exit(EXIT_FAILURE);
+    }
+    if (cudaMalloc((void **)&output_device, sizeof(double) * OUTPUT_SIZE) != cudaSuccess) {
+        fprintf(stderr, "Error allocating device memory for output layer\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (cudaMalloc((void **)&d_hidden_device, sizeof(double) * HIDDEN_SIZE) != cudaSuccess) {
+        fprintf(stderr, "Error allocating device memory for hidden layer gradient\n");
+        exit(EXIT_FAILURE);
+    }
+    if (cudaMalloc((void **)&d_output_device, sizeof(double) * OUTPUT_SIZE) != cudaSuccess) {
+        fprintf(stderr, "Error allocating device memory for output layer gradient\n");
+        exit(EXIT_FAILURE);
+    }
+
+    copyMatrixtoDevice(images, images_dev, numImages, INPUT_SIZE);
+    copyMatrixtoDevice(labels, labels_dev, numImages, OUTPUT_SIZE);
+
+    double *loss_device;
+    int *correct_device;
+
+    if (cudaMalloc((void **)&loss_device, sizeof(double)) != cudaSuccess) {
+        fprintf(stderr, "Error allocating device memory for loss\n");
+        exit(EXIT_FAILURE);
+    }
+    if (cudaMalloc((void **)&correct_device, sizeof(int)) != cudaSuccess) {
+        fprintf(stderr, "Error allocating device memory for correct\n");
+        exit(EXIT_FAILURE);
+    }
+
     clock_t total_start = clock();
     for (int epoch = 0; epoch < EPOCHS; epoch++) {
+
+        double loss = 0.0;
+        int correct = 0;
+
+        if (cudaMemset(loss_device, 0, sizeof(double)) != cudaSuccess) {
+            fprintf(stderr, "Error initializing loss_device\n");
+            exit(EXIT_FAILURE);
+        }
+        if (cudaMemset(correct_device, 0, sizeof(int)) != cudaSuccess) {
+            fprintf(stderr, "Error initializing correct_device\n");
+            exit(EXIT_FAILURE);
+        }
         clock_t epoch_start = clock();
         double loss = 0.0;
         int correct = 0;
 
         for (int i = 0; i < numImages; i++) {
+
+            forwardKernalHidden<<<1, HIDDEN_SIZE>>>(net_device, images_dev + (i * INPUT_SIZE), hidden_device);
+            cudaError_t err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                fprintf(stderr, "Kernel launch error: %s\n", cudaGetErrorString(err));
+                exit(EXIT_FAILURE);
+            }
+            if (cudaDeviceSynchronize() != cudaSuccess) {
+                fprintf(stderr, "Error in cudaDeviceSynchronize\n");
+                exit(EXIT_FAILURE);
+            }
+
+            forwardKernalOutput<<<1, OUTPUT_SIZE>>>(net_device, hidden_device, output_device);
+            err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                fprintf(stderr, "Kernel launch error: %s\n", cudaGetErrorString(err));
+                exit(EXIT_FAILURE);
+            }
+            cudaDeviceSynchronize();
+            applySoftMaxDevice<<<1, 1>>>(output_device);
+            cudaDeviceSynchronize();
+
+
             double hidden[HIDDEN_SIZE], output[OUTPUT_SIZE];
-            forward(net, images[i], hidden, output);
+            // forward(net, images[i], hidden, output);
             backward(net, images[i], hidden, output, labels[i]);
 
             // Compute loss & accuracy
