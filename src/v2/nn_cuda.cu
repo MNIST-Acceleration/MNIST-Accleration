@@ -174,15 +174,38 @@ void forward(NeuralNetwork *net, double *input, double *hidden, double *output) 
 __global__ void forwardKernalHidden(NeuralNetworkDevice *net_dev, double *image, double *hidden) {
     int neuron_no = threadIdx.x;
     int g_index = INPUT_SIZE * neuron_no; // suspicious line
+    // __shared__ double shared_image[INPUT_SIZE];
+    // int one_part = INPUT_SIZE / HIDDEN_SIZE;
+    // for (int i = one_part * neuron_no; i < (one_part * (neuron_no + 1)); i++)
+    //     shared_image[i] = image[i];
+    // if (neuron_no == 127) {
+    //     for (int i = 768; i < 784; i++)
+    //         shared_image[i] = image[i];
+    // }
+    // __syncthreads();
 
-    hidden[neuron_no] = net_dev->b1[neuron_no];
+    double ans = net_dev->b1[neuron_no];
     for (int j = 0; j < INPUT_SIZE; j++)
-        hidden[neuron_no] += net_dev->W1[g_index + j] * image[j];
+        ans += net_dev->W1[g_index + j] * image[j];
 
-    hidden[neuron_no] = (hidden[neuron_no] > 0) ? hidden[neuron_no] : 0;
+    // hidden[neuron_no] = (ans > 0) ? ans : 0;
+    hidden[neuron_no] = fmax(ans, 0.0);
+
 }
 __global__ void forwardKernalOutput(NeuralNetworkDevice *net_dev, double *hidden, double *output_device) {
     int neuron_no = threadIdx.x;
+
+    // __shared__ double shared_hidden[OUTPUT_SIZE];
+
+    // int one_part = HIDDEN_SIZE / OUTPUT_SIZE;
+    // for (int i = one_part * neuron_no; i < (one_part * (neuron_no + 1)); i++)
+    //     shared_hidden[i] = hidden[i];
+    // if (neuron_no == 9) {
+    //     for (int i = 120; i < 128; i++)
+    //         shared_hidden[i] = hidden[i];
+    // }
+    // __syncthreads();
+
     int g_index = HIDDEN_SIZE * neuron_no; // suspicious line
 
     double ans = net_dev->b2[neuron_no];
@@ -198,12 +221,14 @@ __global__ void forwardKernalOutput(NeuralNetworkDevice *net_dev, double *hidden
 __global__ void applySoftMaxDevice(double *output_device) {
 
     double sum = 0;
+    double exps[10];
     for (int i = 0; i < OUTPUT_SIZE; i++) {
-        output_device[i] = exp(output_device[i]);
-        sum += output_device[i];
+        exps[i] =  output_device[i];
+        exps[i] = exp(exps[i]);
+        sum += exps[i];
     }
     for (int i = 0; i < OUTPUT_SIZE; i++) {
-        output_device[i] /= sum;
+        output_device[i] = exps[i] /  sum;
     }
 }
 
@@ -214,10 +239,11 @@ __global__ void computerOutputGradient(double *output, double *target, double *d
 __global__ void computerHiddenGradient(NeuralNetworkDevice *net, double *d_output_device, double *d_hidden_device, double *hidden) {
 
     int i = threadIdx.x;
-    d_hidden_device[i] = 0;
+
+    double ans = 0;
     for (int j = 0; j < OUTPUT_SIZE; j++)
-        d_hidden_device[i] += net->W2[j * HIDDEN_SIZE + i] * d_output_device[j];
-    d_hidden_device[i] *= (hidden[i] > 0);
+        ans += net->W2[j * HIDDEN_SIZE + i] * d_output_device[j];
+    d_hidden_device[i] = ans * (hidden[i] > 0);
 }
 
 __global__ void updateOutputLayer(NeuralNetworkDevice *net, double *d_output_device, double *hidden) {
@@ -273,10 +299,14 @@ void backwardDevice(NeuralNetworkDevice *net, double *input, double *hidden, dou
 }
 
 __global__ void findCorrect(double *loss_device, int *correct_device, double *output, double *labels_dev) {
+   
+    double loss_loc = *loss_device;
     for (int k = 0; k < OUTPUT_SIZE; k++) {
-        *loss_device -= labels_dev[k] * log(output[k]);
+        loss_loc -= labels_dev[k] * log(output[k]);
     }
+    *loss_device = loss_loc;
     int pred = 0, actual = 0;
+
 
     for (int j = 0; j < OUTPUT_SIZE; j++) {
         if (output[j] > output[pred])
@@ -351,6 +381,13 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, double **images,
 
         for (int i = 0; i < numImages; i++) {
 
+            cudaEvent_t start, stop;
+            float elapsed;
+
+            // cudaEventCreate(&start);
+            // cudaEventCreate(&stop);
+
+            // cudaEventRecord(start);
             forwardKernalHidden<<<1, HIDDEN_SIZE>>>(net_device, images_dev + (i * INPUT_SIZE), hidden_device);
             cudaError_t err = cudaGetLastError();
             if (err != cudaSuccess) {
@@ -362,21 +399,52 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, double **images,
                 exit(EXIT_FAILURE);
             }
 
+            // cudaEventRecord(stop);
+            // cudaEventSynchronize(stop);
+            // cudaEventElapsedTime(&elapsed, start, stop);
+            // printf("forwardKernalHidden: %.3f ms\n", elapsed);
+
+            // cudaEventRecord(start);
             forwardKernalOutput<<<1, OUTPUT_SIZE>>>(net_device, hidden_device, output_device);
             err = cudaGetLastError();
             if (err != cudaSuccess) {
                 fprintf(stderr, "Kernel launch error: %s\n", cudaGetErrorString(err));
                 exit(EXIT_FAILURE);
             }
-            cudaDeviceSynchronize();
-            applySoftMaxDevice<<<1, 1>>>(output_device);
-            cudaDeviceSynchronize();
+            // cudaDeviceSynchronize();
+            // cudaEventRecord(stop);
+            // cudaEventSynchronize(stop);
+            // cudaEventElapsedTime(&elapsed, start, stop);
+            // printf("forwardKernaOutput: %.3f ms\n", elapsed);
 
-            backwardDevice(net_device, images_dev + (i * INPUT_SIZE), hidden_device, output_device, labels_dev + (i * OUTPUT_SIZE), d_hidden_device, d_output_device);
+            // cudaEventRecord(start);
+            applySoftMaxDevice<<<1, 1>>>(output_device);
+            
             cudaDeviceSynchronize();
+            
+            // cudaEventRecord(stop);
+            // cudaEventSynchronize(stop);
+            // cudaEventElapsedTime(&elapsed, start, stop);
+            // printf("applySoftMaxDevice: %.3f ms\n", elapsed);
+
+            // cudaEventRecord(start);
+            backwardDevice(net_device, images_dev + (i * INPUT_SIZE), hidden_device, output_device, labels_dev + (i * OUTPUT_SIZE), d_hidden_device, d_output_device);
+            
+            // cudaEventRecord(stop);
+            // cudaEventSynchronize(stop);
+            // cudaEventElapsedTime(&elapsed, start, stop);
+            // printf("backwardDevice: %.3f ms\n", elapsed);
+            
+            
+            // cudaEventRecord(start);
             findCorrect<<<1, 1>>>(loss_device, correct_device, output_device, labels_dev + (i * OUTPUT_SIZE));
             cudaDeviceSynchronize();
-            // break;
+           
+            // cudaEventRecord(stop);
+            // cudaEventSynchronize(stop);
+            // cudaEventElapsedTime(&elapsed, start, stop);
+            // printf("findCorrect: %.3f ms\n", elapsed);
+            // brak;
         }
 
         if (cudaMemcpy(&loss, loss_device, sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) {
