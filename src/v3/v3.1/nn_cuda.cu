@@ -198,13 +198,14 @@ __global__ void forwardKernalHidden(NeuralNetworkDevice *net_dev, float *image, 
 }
 __global__ void forwardKernalOutput(NeuralNetworkDevice *net_dev, float *hidden, float *output_device) {
    
-    int neuron_no = threadIdx.x;
+    int neuron_no = blockDim.x * blockIdx.x +  threadIdx.x;
     __shared__ float shared_hidden[OUTPUT_SIZE];
 
     int one_part = HIDDEN_SIZE / OUTPUT_SIZE;
     
     for (int i = one_part * neuron_no; i < (one_part * (neuron_no + 1)); i++)
         shared_hidden[i] = hidden[i];
+        
     if (neuron_no == 9) {
         for (int i = 120; i < 128; i++)
             shared_hidden[i] = hidden[i];
@@ -387,10 +388,10 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
             cudaEvent_t start, stop;
             float elapsed;
 
-            // cudaEventCreate(&start);
-            // cudaEventCreate(&stop);
+            cudaEventCreate(&start);
+            cudaEventCreate(&stop);
 
-            // cudaEventRecord(start);
+            cudaEventRecord(start);
             forwardKernalHidden<<<1, HIDDEN_SIZE>>>(net_device, images_dev + (i * INPUT_SIZE), hidden_device);
             cudaError_t err = cudaGetLastError();
             if (err != cudaSuccess) {
@@ -402,10 +403,10 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
                 exit(EXIT_FAILURE);
             }
 
-            // cudaEventRecord(stop);
-            // cudaEventSynchronize(stop);
-            // cudaEventElapsedTime(&elapsed, start, stop);
-            // printf("forwardKernalHidden: %.3f ms\n", elapsed);
+            cudaEventRecord(stop);
+            cudaEventSynchronize(stop);
+            cudaEventElapsedTime(&elapsed, start, stop);
+            printf("forwardKernalHidden: %.3f ms\n", elapsed);
 
             // cudaEventRecord(start);
             forwardKernalOutput<<<1, OUTPUT_SIZE>>>(net_device, hidden_device, output_device);
