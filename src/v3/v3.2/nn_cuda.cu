@@ -389,11 +389,11 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
         fprintf(stderr, "Error allocating device memory for correct\n");
         exit(EXIT_FAILURE);
     }
-    clock_t total_start = clock();
     int epoch = 0;
+    float total_time = 0.0f;
     for (; epoch < EPOCHS; epoch++) {
-        clock_t epoch_start = clock();
-        float loss = 0.0;
+        float epoch_time = 0.0f;
+        float loss = 0.0f;
         int correct = 0;
 
         if (cudaMemset(loss_device, 0, sizeof(float)) != cudaSuccess) {
@@ -425,9 +425,7 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
                 exit(EXIT_FAILURE);
             }
 
-            cudaEventRecord(stop);
-            cudaEventSynchronize(stop);
-            cudaEventElapsedTime(&elapsed, start, stop);
+         
 
             // cudaEventRecord(start);
             forwardKernalOutput<<<1, OUTPUT_SIZE>>>(net_device, hidden_device, output_device);
@@ -464,7 +462,13 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
             // cudaEventRecord(start);
             findCorrect<<<1, 1>>>(loss_device, correct_device, output_device, labels_dev + (i * OUTPUT_SIZE));
             cudaDeviceSynchronize();
-           
+            cudaEventRecord(stop);
+            cudaEventSynchronize(stop);
+
+            
+            cudaEventElapsedTime(&elapsed, start, stop);
+            epoch_time += elapsed;
+            
             // cudaEventRecord(stop);
             // cudaEventSynchronize(stop);
             // cudaEventElapsedTime(&elapsed, start, stop);
@@ -480,8 +484,11 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
             printf("Error in copying correct from device to host");
         }
         printf("Epoch %d - Loss: %.4f - Train Accuracy: %.2f%% - Time: %.3fs\n",
-               epoch + 1, loss / numImages, (correct / (float)numImages) * 100, get_time(epoch_start));
+               epoch + 1, loss / numImages, (correct / (float)numImages) * 100, epoch_time/1000.0f);
+        total_time += epoch_time / 1000.0f;
+    
     }
+    printf("Total training time: %.3fs\n", total_time);
 
     NeuralNetworkDevice net_dev;
     cudaMemcpy(&net_dev, net_device, sizeof(NeuralNetworkDevice), cudaMemcpyDeviceToHost);
@@ -492,7 +499,7 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
     cudaMemcpy(net->b1, net_dev.b1, HIDDEN_SIZE * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(net->b2, net_dev.b2, OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost);
 
-    printf("Total training time: %.3fs\n", get_time(total_start));
+    //printf("Total training time: %.3fs\n", get_time(total_start));
 }
 
 // Evaluate accuracy on test data

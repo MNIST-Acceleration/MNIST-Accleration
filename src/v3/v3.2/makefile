@@ -1,5 +1,5 @@
 CC = nvcc
-CFLAGS = -O3 -use_fast_math -Xcompiler "-Wall"
+CFLAGS = -O3 -use_fast_math -Xcompiler "-Wall" -arch=sm_80 --fmad=true   
 EXE = nn.exe
 SRC = nn_cuda.cu
 
