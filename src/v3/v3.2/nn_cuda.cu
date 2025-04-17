@@ -11,6 +11,7 @@
 #define BATCH_SIZE 64
 #define NUM_CLASSES 10
 
+
 // Timer function
 float get_time(clock_t start) {
     return (float)(clock() - start) / CLOCKS_PER_SEC;
@@ -171,24 +172,31 @@ void forward(NeuralNetwork *net, float *input, float *hidden, float *output) {
     softmax(output, OUTPUT_SIZE);
 }
 
-__global__ void forwardKernalHidden(NeuralNetworkDevice *net_dev,float *image, float *hidden) {
+__global__ void forwardKernalHidden(NeuralNetworkDevice *net_dev, float *image, float *hidden) {
     
-
-    int neuron_no = blockIdx.x;
-    int parameter_no = threadIdx.x;
-
+    int neuron_no = threadIdx.x;
     int g_index = INPUT_SIZE * neuron_no; // suspicious line
-    hidden[blockIdx.x * blockDim.x +  ]
+
+    __shared__ float shared_image[INPUT_SIZE];
+    int one_part = INPUT_SIZE / HIDDEN_SIZE;
+
+    for (int i = one_part * neuron_no; i < (one_part * (neuron_no + 1)); i++)
+        shared_image[i] = image[i];
+
+    if (neuron_no == 127) {
+        for (int i = 768; i < 784; i++)
+            shared_image[i] = image[i];
+    }
+    __syncthreads();
+
     float ans = net_dev->b1[neuron_no];
     for (int j = 0; j < INPUT_SIZE; j++)
-        ans += net_dev->W1[g_index + j] * image[j];
+        ans += net_dev->W1[g_index + j] * shared_image[j];
 
-    hidden[neuron_no] = (ans > 0) ? ans : 0;
+    hidden[neuron_no] = (ans > 0)*ans;
     // hidden[neuron_no] = fmax(ans, 0.0);
 
 }
-
-
 __global__ void forwardKernalOutput(NeuralNetworkDevice *net_dev, float *hidden, float *output_device) {
    
     int neuron_no = blockDim.x * blockIdx.x +  threadIdx.x;
@@ -212,22 +220,43 @@ __global__ void forwardKernalOutput(NeuralNetworkDevice *net_dev, float *hidden,
         ans += net_dev->W2[g_index + j] * shared_hidden[j];
     }
 
-    output_device[neuron_no] = (ans > 0) ? ans : 0;
+    ans = (ans > 0) * ans;
+
+    __shared__ float sum;
+
+    int tid = threadIdx.x;
+    int expv = exp(ans);
+    if (tid == 0) sum = 0.0f;
+    __syncthreads();
+    atomicAdd(&sum, expv);
+    __syncthreads();
+    output_device[neuron_no] = expv / sum;
+
 }
 
 __global__ void applySoftMaxDevice(float *output_device) {
+    float expv;  
+    __shared__ float sum;              
 
-    float sum = 0;
-    float exps[10];
-    for (int i = 0; i < OUTPUT_SIZE; i++) {
-        exps[i] =  output_device[i];
-        exps[i] = exp(exps[i]);
-        sum += exps[i];
+    int tid = threadIdx.x;
+    
+    if (tid < OUTPUT_SIZE) {
+        expv = exp(output_device[tid]);
     }
-    for (int i = 0; i < OUTPUT_SIZE; i++) {
-        output_device[i] = exps[i] /  sum;
+
+    if (tid == 0) sum = 0.0f;  
+    __syncthreads();
+    
+    if (tid < OUTPUT_SIZE) {
+        atomicAdd(&sum, expv);  
+    }
+    __syncthreads();
+
+    if (tid < OUTPUT_SIZE) {
+        output_device[tid] = expv / sum;
     }
 }
+
 
 __global__ void computerOutputGradient(float *output, float *target, float *d_output_device) {
     d_output_device[threadIdx.x] = output[threadIdx.x] - target[threadIdx.x];
@@ -249,8 +278,8 @@ __global__ void updateOutputLayer(NeuralNetworkDevice *net, float *d_output_devi
     int j = threadIdx.x;
     net->W2[i * HIDDEN_SIZE + j] -= LEARNING_RATE * d_output_device[i] * hidden[j];
 
-    if (threadIdx.x == 0)
-        net->b2[i] -= LEARNING_RATE * d_output_device[i];
+  
+    net->b2[i] -=  (threadIdx.x == 0) * LEARNING_RATE * d_output_device[i];
 }
 __global__ void updateHiddenLayer(NeuralNetworkDevice *net, float *d_hidden_device, float *input) {
 
@@ -258,8 +287,8 @@ __global__ void updateHiddenLayer(NeuralNetworkDevice *net, float *d_hidden_devi
     int j = threadIdx.x;
     net->W1[i * INPUT_SIZE + j] -= LEARNING_RATE * d_hidden_device[i] * input[j];
 
-    if (threadIdx.x == 0)
-        net->b1[i] -= LEARNING_RATE * d_hidden_device[i];
+ 
+    net->b1[i] -=  (threadIdx.x == 0) * LEARNING_RATE * d_hidden_device[i];
 }
 
 void backwardDevice(NeuralNetworkDevice *net, float *input, float *hidden, float *output, float *target, float *d_hidden_device, float *d_output_device) {
@@ -311,10 +340,10 @@ __global__ void findCorrect(float *loss_device, int *correct_device, float *outp
         if (labels_dev[j] > labels_dev[actual])
             actual = j;
     }
-    if (pred == actual)
-        (*correct_device)++;
+    
+    (*correct_device) += (pred == actual);
 }
-// Train network
+
 void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, float **labels, int numImages) {
     float *images_dev;
 
@@ -399,7 +428,6 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
             cudaEventRecord(stop);
             cudaEventSynchronize(stop);
             cudaEventElapsedTime(&elapsed, start, stop);
-            printf("forwardKernalHidden: %.3f ms\n", elapsed);
 
             // cudaEventRecord(start);
             forwardKernalOutput<<<1, OUTPUT_SIZE>>>(net_device, hidden_device, output_device);
@@ -415,9 +443,9 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
             // printf("forwardKernaOutput: %.3f ms\n", elapsed);
 
             // cudaEventRecord(start);
-            applySoftMaxDevice<<<1, 1>>>(output_device);
+            // applySoftMaxDevice<<<1, OUTPUT_SIZE>>>(output_device);
             
-            cudaDeviceSynchronize();
+            // cudaDeviceSynchronize();
             
             // cudaEventRecord(stop);
             // cudaEventSynchronize(stop);
@@ -551,10 +579,10 @@ void freeNetwork(NeuralNetwork *net) {
 int main() {
     printf("MNIST Neural Network\n\n");
 
-    float **train_images = loadMNISTImages("./../../data/train-images.idx3-ubyte", 60000);
-    float **train_labels = loadMNISTLabels("./../../data/train-labels.idx1-ubyte", 60000);
-    float **test_images = loadMNISTImages("./../../data/t10k-images.idx3-ubyte", 10000);
-    float **test_labels = loadMNISTLabels("./../../data/t10k-labels.idx1-ubyte", 10000);
+    float **train_images = loadMNISTImages("./../../../data/train-images.idx3-ubyte", 60000);
+    float **train_labels = loadMNISTLabels("./../../../data/train-labels.idx1-ubyte", 60000);
+    float **test_images = loadMNISTImages("./../../../data/t10k-images.idx3-ubyte", 10000);
+    float **test_labels = loadMNISTLabels("./../../../data/t10k-labels.idx1-ubyte", 10000);
 
     NeuralNetwork *net = createNetwork();
     NeuralNetworkDevice *net_device = createNetworkDevice(net);
