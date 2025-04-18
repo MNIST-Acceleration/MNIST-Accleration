@@ -406,7 +406,6 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
             cudaEventRecord(stop);
             cudaEventSynchronize(stop);
             cudaEventElapsedTime(&elapsed, start, stop);
-            printf("forwardKernalHidden: %.3f ms\n", elapsed);
 
             // cudaEventRecord(start);
             forwardKernalOutput<<<1, OUTPUT_SIZE>>>(net_device, hidden_device, output_device);
@@ -558,10 +557,10 @@ void freeNetwork(NeuralNetwork *net) {
 int main() {
     printf("MNIST Neural Network\n\n");
 
-    float **train_images = loadMNISTImages("./../../data/train-images.idx3-ubyte", 60000);
-    float **train_labels = loadMNISTLabels("./../../data/train-labels.idx1-ubyte", 60000);
-    float **test_images = loadMNISTImages("./../../data/t10k-images.idx3-ubyte", 10000);
-    float **test_labels = loadMNISTLabels("./../../data/t10k-labels.idx1-ubyte", 10000);
+    float **train_images = loadMNISTImages("./../../../data/train-images.idx3-ubyte", 60000);
+    float **train_labels = loadMNISTLabels("./../../../data/train-labels.idx1-ubyte", 60000);
+    float **test_images = loadMNISTImages("./../../../data/t10k-images.idx3-ubyte", 10000);
+    float **test_labels = loadMNISTLabels("./../../../data/t10k-labels.idx1-ubyte", 10000);
 
     NeuralNetwork *net = createNetwork();
     NeuralNetworkDevice *net_device = createNetworkDevice(net);
