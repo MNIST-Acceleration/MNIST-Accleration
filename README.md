@@ -1,5 +1,6 @@
  
-# HPC Project: Neural Network Acceleration on GPUs
+# [HPC Project: Neural Network Acceleration on GPUs](https://github.com/MNIST-Acceleration/MNIST-Accleration)
+
 ## MNIST Classification Case Study
 
 ### Project Overview
