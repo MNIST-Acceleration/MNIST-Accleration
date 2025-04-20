@@ -6,25 +6,27 @@
 This project analyzes multiple implementations of the **MNIST classification problem**, a benchmark task for recognizing handwritten digits (0–9) from 70,000 grayscale images (28×28 pixels each). The goal is to evaluate speedup achieved by parallelizing a native neural network algorithm using GPU programming (CUDA).
 
 ---
-## Installation
+
+
+## Getting Started
+
+### Installation
 
 To run the GPU implementations (V2–V4), ensure the CUDA Toolkit and cuBLAS are installed.
 
-### CUDA Toolkit (v12.4)
+#### CUDA Toolkit (v12.4)
 ```bash
 sudo apt update
 sudo apt install nvidia-cuda-toolkit
 nvcc --version
 
---
-## Getting Started
 
 ### Clone the Repository
 
 ```bash
 git clone https://github.com/yourusername/mnist-cuda-acceleration.git
 cd mnist-cuda-acceleration
-
+```
 
 ### Build & Run
 
@@ -38,7 +40,7 @@ Navigate to a version folder and run:
 cd src/V1
 make        # Builds the executable
 make run    # Runs the program
-
+```
 --
 
 ## Implementations
