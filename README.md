@@ -1,11 +1,48 @@
  
-# HPC Project: Neural Network Acceleration on GPUs
+# [HPC Project: Neural Network Acceleration on GPUs](https://github.com/MNIST-Acceleration/MNIST-Accleration)
+
 ## MNIST Classification Case Study
 
 ### Project Overview
 This project analyzes multiple implementations of the **MNIST classification problem**, a benchmark task for recognizing handwritten digits (0–9) from 70,000 grayscale images (28×28 pixels each). The goal is to evaluate speedup achieved by parallelizing a native neural network algorithm using GPU programming (CUDA).
 
 ---
+
+
+## Getting Started
+
+### Installation
+
+To run the GPU implementations (V2–V4), ensure the CUDA Toolkit and cuBLAS are installed.
+
+#### CUDA Toolkit (v12.4)
+```bash
+sudo apt update
+sudo apt install nvidia-cuda-toolkit
+nvcc --version
+
+
+### Clone the Repository
+
+```bash
+git clone https://github.com/yourusername/mnist-cuda-acceleration.git
+cd mnist-cuda-acceleration
+```
+
+### Build & Run
+
+Each version directory (`V1`, `V2`, `V3`, `V4`) contains its own `Makefile` for compiling and running the respective implementation.
+
+#### Example Commands
+
+Navigate to a version folder and run:
+
+```bash
+cd src/V1
+make        # Builds the executable
+make run    # Runs the program
+```
+--
 
 ## Implementations
 Four versions are developed, each optimizing performance incrementally:
@@ -29,3 +66,4 @@ src/
 data/            # MNIST dataset
 report/          # Reports for each deliverable
 README.md        # This file
+slides/ 
