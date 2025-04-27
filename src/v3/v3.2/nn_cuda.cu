@@ -176,16 +176,28 @@ void forward(NeuralNetwork *net, float *input, float *hidden, float *output) {
 __global__ void forwardAndBackwardsKernel(NeuralNetworkDevice *net, float *input, float *hidden, float *output, int batch_size, float* labels_dev, float *d_hidden, float *d_output) {
     int batch_index = blockIdx.x;
     int thread_index = threadIdx.x;
+    int no_threads   = blockDim.x;
     __shared__ float sum;
+    __shared__ float shared_hidden[OUTPUT_SIZE];
+    __shared__ float shared_image[INPUT_SIZE];
+
+    const float* img = input + batch_index * INPUT_SIZE;
+
+    for (int i = thread_index; i < INPUT_SIZE; i += no_threads) {
+        shared_image[i] = img[i];
+    }
+    __syncthreads();
+
+
     if (thread_index < HIDDEN_SIZE) {
         float hidden_bias = net->b1[thread_index];
         float val = 0.0f;
         for (int j = 0; j < INPUT_SIZE; j++) {
-            val += net->W1[thread_index * INPUT_SIZE + j] * input[batch_index * INPUT_SIZE + j] + (j == 0) * hidden_bias;
+            val += net->W1[thread_index * INPUT_SIZE + j] * shared_image[j] + (j == 0) * hidden_bias;
         }
         val = (val > 0) ? val : 0;
         hidden[batch_index * HIDDEN_SIZE + thread_index] = val;
-        
+        shared_hidden[thread_index] = val;
     }
 
     sum = 0.0f;
@@ -194,7 +206,7 @@ __global__ void forwardAndBackwardsKernel(NeuralNetworkDevice *net, float *input
     if (thread_index < OUTPUT_SIZE) {
         float val = 0.0f;
         for (int j = 0; j < HIDDEN_SIZE; j++) {
-            val += net->W2[thread_index * HIDDEN_SIZE + j] * hidden[batch_index * HIDDEN_SIZE + j] + (j == 0) * net->b2[thread_index];
+            val += net->W2[thread_index * HIDDEN_SIZE + j] * shared_hidden[j] + (j == 0) * net->b2[thread_index];
         }
         expv = exp(val);
         atomicAdd(&sum, expv);
@@ -322,6 +334,27 @@ void find_correct(
     }
 }
 
+__global__ void statsKernel(const float* __restrict__ output,const float* __restrict__ labels,int batch_size,int output_size,float* d_loss,int*   d_correct) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= batch_size) return;
+
+    float sample_loss = 0.0f;
+    const float* out_row = output + tid * output_size;
+    const float* lb_row  = labels + tid * output_size;
+    for (int k = 0; k < output_size; ++k) {
+        sample_loss -= lb_row[k] * logf(out_row[k]);
+    }
+
+    int pred = 0, actual = 0;
+    for (int k = 1; k < output_size; ++k) {
+        if (out_row[k] > out_row[pred]) pred = k;
+        if (lb_row[k] > lb_row[actual]) actual = k;
+    }
+    int hit = (pred == actual) ? 1 : 0;
+
+    atomicAdd(d_loss,    sample_loss);
+    atomicAdd(d_correct,  hit);
+}
 
 void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, float **labels, int numImages) {
     float *images_dev;
@@ -398,6 +431,8 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
     int epoch = 0;
     float total_time = 0.0f;
     for (; epoch < EPOCHS; epoch++) {
+        cudaMemset(loss_device,    0, sizeof(float));
+        cudaMemset(correct_device, 0, sizeof(int));
         float epoch_time = 0.0f;
         float loss = 0.0f;
         int correct = 0;
@@ -436,12 +471,17 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
             int blocks = (HIDDEN_SIZE * INPUT_SIZE + threads_per_block - 1) / threads_per_block;
 
             update_grads<<<blocks, threads_per_block>>>(d_accum_W1, d_accum_W2, d_accum_b1, d_accum_b2, d_hidden_device, d_output_device, images_dev + start * INPUT_SIZE, hidden_device);
-            cudaDeviceSynchronize();
             update_weights<<<blocks, threads_per_block>>>(net_device, d_accum_W1, d_accum_W2, d_accum_b1, d_accum_b2);
-            cudaDeviceSynchronize();
+
+            threads_per_block = 128;                            
+            blocks  = (batch_size + threads_per_block - 1) / threads_per_block;
+
+            statsKernel<<<blocks, threads_per_block>>>(output_device,labels_dev + start * OUTPUT_SIZE,batch_size,OUTPUT_SIZE,loss_device,correct_device);
             cudaEventRecord(e_stop);
             cudaEventSynchronize(e_stop);
             cudaEventElapsedTime(&elapsed, e_start, e_stop);
+          
+
             float time = elapsed / 1000.0f;
             epoch_time += time;
             total_time += time;
@@ -455,9 +495,10 @@ void train(NeuralNetwork *net, NeuralNetworkDevice *net_device, float **images, 
         if (cudaMemcpy(&correct, correct_device, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
             printf("Error in copying correct from device to host");
         }
+     
         // printf("Epoch %d: Time: %.3fs\n", epoch + 1, epoch_time);
         printf("Epoch %d - Loss: %.4f - Train Accuracy: %.2f%% - Time: %.3fs\n",
-               epoch + 1, loss / numImages, (correct / (float)numImages) * 100, epoch_time);
+               epoch + 1, loss / float(numImages), (correct / (float)numImages) * 100.0f, epoch_time);
     }
     printf("Total training time: %.3fs\n", total_time);
 
